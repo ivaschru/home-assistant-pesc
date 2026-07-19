@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CURRENCY_RUBLE, UnitOfEnergy
+from homeassistant.const import UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -35,7 +35,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         key="balance",
         translation_key="balance",
         device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement=CURRENCY_RUBLE,
+        native_unit_of_measurement="RUB",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda account: account.balance,
     ),
@@ -43,7 +43,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         key="amount_due",
         translation_key="amount_due",
         device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement=CURRENCY_RUBLE,
+        native_unit_of_measurement="RUB",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda account: account.amount_due,
     ),
@@ -51,7 +51,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         key="overpayment",
         translation_key="overpayment",
         device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement=CURRENCY_RUBLE,
+        native_unit_of_measurement="RUB",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda account: account.overpayment,
     ),
@@ -59,7 +59,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         key="current_bill",
         translation_key="current_bill",
         device_class=SensorDeviceClass.MONETARY,
-        native_unit_of_measurement=CURRENCY_RUBLE,
+        native_unit_of_measurement="RUB",
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda account: account.current_bill_amount,
     ),
