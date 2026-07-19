@@ -1,0 +1,36 @@
+submit_readings:
+  name: Submit meter readings
+  description: >-
+    Validates a complete set of readings against the current meter metadata and
+    submits it to PESC. This action changes data in the personal account.
+  fields:
+    config_entry_id:
+      name: Config entry
+      description: Required only when more than one PESC config entry is loaded.
+      selector:
+        config_entry:
+          integration: pesc
+    account_id:
+      name: Account ID
+      description: Numeric account ID shown in the entity attributes.
+      required: true
+      example: 123456
+      selector:
+        number:
+          min: 1
+          mode: box
+    meter:
+      name: Meter
+      description: Meter serial or registration; optional for a single-meter account.
+      example: "12345678"
+      selector:
+        text:
+    readings:
+      name: Readings
+      description: Complete mapping of every tariff name or scale ID to its value.
+      required: true
+      example:
+        Day: 12345
+        Night: 6789
+      selector:
+        object:

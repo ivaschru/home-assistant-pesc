@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect PESC personal account",
+        "description": "Enter the credentials used at ikus.pesc.ru. For unattended login, paste the Base32 TOTP secret or the full otpauth:// URI.",
+        "data": {"username": "Login", "password": "Password", "totp_secret": "TOTP secret or otpauth URI"}
+      },
+      "reauth_confirm": {
+        "title": "Reconnect PESC personal account",
+        "description": "Update all three credentials. Use the permanent TOTP secret, not a six-digit code.",
+        "data": {"username": "Login", "password": "Password", "totp_secret": "TOTP secret or otpauth URI"}
+      }
+    },
+    "error": {"cannot_connect": "Cannot connect to PESC", "invalid_auth": "PESC rejected the credentials or TOTP", "invalid_totp": "Invalid TOTP secret or otpauth URI", "unknown": "Unexpected PESC response"},
+    "abort": {"already_configured": "This PESC login is already configured", "reauth_successful": "PESC credentials were updated"}
+  },
+  "entity": {
+    "sensor": {"balance": {"name": "Balance"}, "amount_due": {"name": "Amount due"}, "overpayment": {"name": "Overpayment"}, "current_bill": {"name": "Current bill"}, "reading_deadline": {"name": "Reading deadline"}},
+    "binary_sensor": {"readings_accepted": {"name": "Readings accepted"}}
+  },
+  "services": {"submit_readings": {"name": "Submit meter readings", "description": "Validate and submit a complete set of meter readings to PESC."}}
+}

@@ -1,0 +1,13 @@
+{
+  "domain": "pesc",
+  "name": "PESC Personal Account",
+  "codeowners": ["@ivaschru"],
+  "config_flow": true,
+  "diagnostics": true,
+  "documentation": "https://github.com/ivaschru/home-assistant-pesc",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/ivaschru/home-assistant-pesc/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
