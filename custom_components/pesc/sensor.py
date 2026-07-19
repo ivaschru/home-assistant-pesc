@@ -36,7 +36,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         translation_key="balance",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="RUB",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         value_fn=lambda account: account.balance,
     ),
     PescAccountSensorDescription(
@@ -44,7 +44,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         translation_key="amount_due",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="RUB",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         value_fn=lambda account: account.amount_due,
     ),
     PescAccountSensorDescription(
@@ -52,7 +52,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         translation_key="overpayment",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="RUB",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         value_fn=lambda account: account.overpayment,
     ),
     PescAccountSensorDescription(
@@ -60,7 +60,7 @@ ACCOUNT_SENSORS: tuple[PescAccountSensorDescription, ...] = (
         translation_key="current_bill",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="RUB",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
         value_fn=lambda account: account.current_bill_amount,
     ),
     PescAccountSensorDescription(
