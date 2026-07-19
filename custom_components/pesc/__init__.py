@@ -50,6 +50,10 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
+# The integration is configured exclusively through its UI config flow.  This
+# explicit schema also tells Home Assistant to reject accidental YAML options.
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 SUBMIT_READINGS_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
