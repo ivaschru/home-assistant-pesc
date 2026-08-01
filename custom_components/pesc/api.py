@@ -14,6 +14,7 @@ import json
 import math
 import re
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
@@ -22,10 +23,14 @@ from urllib.parse import quote
 from aiohttp import ClientError, ClientResponse, ClientSession
 
 from .const import (
+    ACCOUNT_TYPE_INDIVIDUAL,
+    ACCOUNT_TYPE_LEGAL,
     DEFAULT_PROVIDER_CODES,
-    PESC_API_BASE_URL,
-    PESC_CUSTOMER_HEADER,
     PESC_FRONTEND_VERSION,
+    PESC_INDIVIDUAL_API_BASE_URL,
+    PESC_INDIVIDUAL_CUSTOMER_HEADER,
+    PESC_LEGAL_API_BASE_URL,
+    PESC_LEGAL_CUSTOMER_HEADER,
 )
 from .models import (
     PescAccount,
@@ -54,12 +59,22 @@ class PescValidationError(PescApiError):
     """Raised before an unsafe or malformed meter submission is transmitted."""
 
 
-def normalize_login(value: str) -> tuple[str, str]:
-    """Normalize an email or Russian phone login for the PESC login endpoint."""
+def normalize_login(
+    value: str, account_type: str = ACCOUNT_TYPE_INDIVIDUAL
+) -> tuple[str, str]:
+    """Normalize a login according to the selected PESC cabinet."""
 
     login = value.strip()
     if "@" in login:
         return login.lower(), "EMAIL"
+
+    # The legal cabinet advertises EMAIL and LOGIN authentication.  Unlike the
+    # individual cabinet it does not normalize arbitrary logins as Russian
+    # phone numbers, because a contract login may be an organization username.
+    if account_type == ACCOUNT_TYPE_LEGAL:
+        if not login:
+            raise PescAuthenticationError("The legal-account login is empty")
+        return login, "LOGIN"
 
     digits = re.sub(r"\D", "", login)
     if len(digits) == 11 and digits.startswith("8"):
@@ -79,6 +94,28 @@ def _parse_date(value: Any) -> date | None:
             return datetime.strptime(value, date_format).date()
         except ValueError:
             continue
+
+    # The legal cabinet returns the preceding reading month in Russian, for
+    # example ``июнь 2026``.  Store the first day as a stable month marker.
+    russian_months = {
+        "январь": 1,
+        "февраль": 2,
+        "март": 3,
+        "апрель": 4,
+        "май": 5,
+        "июнь": 6,
+        "июль": 7,
+        "август": 8,
+        "сентябрь": 9,
+        "октябрь": 10,
+        "ноябрь": 11,
+        "декабрь": 12,
+    }
+    match = re.fullmatch(
+        r"([\u0430-\u044f\u0451]+)\s+(\d{4})", value.strip().casefold()
+    )
+    if match and match.group(1) in russian_months:
+        return date(int(match.group(2)), russian_months[match.group(1)], 1)
     return None
 
 
@@ -96,26 +133,54 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 class PescApiClient:
-    """Authenticated, retrying client for one PESC personal account."""
+    """Authenticated, retrying client for one selected PESC cabinet type."""
 
     def __init__(
         self,
         session: ClientSession,
         login: str,
         password: str,
-        totp_secret: str,
+        totp_secret: str | None,
         *,
+        account_type: str = ACCOUNT_TYPE_INDIVIDUAL,
         provider_codes: list[str] | None = None,
+        verification_token: str | None = None,
     ) -> None:
         self._session = session
-        self._login, self._login_type = normalize_login(login)
+        if account_type not in {ACCOUNT_TYPE_INDIVIDUAL, ACCOUNT_TYPE_LEGAL}:
+            raise ValueError(f"Unsupported PESC account type: {account_type}")
+        self._account_type = account_type
+        self._login, self._login_type = normalize_login(login, account_type)
         self._password = password
         self._totp_secret = totp_secret
+        self._verification_token = verification_token
         self._provider_codes = {
             code.upper() for code in (provider_codes or DEFAULT_PROVIDER_CODES)
         }
         self._tokens: dict[str, str] | None = None
         self._auth_lock = asyncio.Lock()
+
+    @property
+    def account_type(self) -> str:
+        """Return the cabinet type selected for this client."""
+
+        return self._account_type
+
+    @property
+    def _api_base_url(self) -> str:
+        """Use the host belonging to the selected cabinet."""
+
+        if self._account_type == ACCOUNT_TYPE_LEGAL:
+            return PESC_LEGAL_API_BASE_URL
+        return PESC_INDIVIDUAL_API_BASE_URL
+
+    @property
+    def _customer_header(self) -> str:
+        """Return the frontend customer marker expected by that host."""
+
+        if self._account_type == ACCOUNT_TYPE_LEGAL:
+            return PESC_LEGAL_CUSTOMER_HEADER
+        return PESC_INDIVIDUAL_CUSTOMER_HEADER
 
     @staticmethod
     def _jwt_ttl(token: str | None) -> float:
@@ -162,7 +227,7 @@ class PescApiClient:
         headers = {
             "Content-Type": "application/json",
             "VERSION": PESC_FRONTEND_VERSION,
-            "customer": PESC_CUSTOMER_HEADER,
+            "customer": self._customer_header,
         }
         if authenticated and self._tokens and self._tokens.get("auth"):
             headers["Authorization"] = f"Bearer {self._tokens['auth']}"
@@ -183,7 +248,7 @@ class PescApiClient:
         try:
             async with self._session.request(
                 method,
-                f"{PESC_API_BASE_URL}/{path.lstrip('/')}",
+                f"{self._api_base_url}/{path.lstrip('/')}",
                 json=payload,
                 headers=self._headers(authenticated=authenticated),
             ) as response:
@@ -205,9 +270,14 @@ class PescApiClient:
         async with self._auth_lock:
             login_headers = self._headers(authenticated=False)
             login_headers.update({"Captcha": "none", "withTotp": "true"})
+            if self._verification_token:
+                # This is the same trusted-device token used by the official
+                # frontend.  It avoids storing a permanent TOTP seed when a
+                # config flow has completed a one-time verification instead.
+                login_headers["Auth-Verification"] = self._verification_token
             try:
                 async with self._session.post(
-                    f"{PESC_API_BASE_URL}/v8/users/auth",
+                    f"{self._api_base_url}/v8/users/auth",
                     json={
                         "login": self._login,
                         "password": self._password,
@@ -222,6 +292,8 @@ class PescApiClient:
 
             if status == 200 and isinstance(payload, dict):
                 self._tokens = self._validate_tokens(payload)
+                if self._tokens.get("verified"):
+                    self._verification_token = self._tokens["verified"]
                 return
 
             if status != 424 or not isinstance(payload, dict):
@@ -231,6 +303,10 @@ class PescApiClient:
             challenge_types = payload.get("types", [])
             if not isinstance(transaction_id, str) or "TOTP" not in challenge_types:
                 raise PescAuthenticationError("PESC did not offer a TOTP challenge")
+            if not self._totp_secret:
+                raise PescAuthenticationError(
+                    "PESC requires a permanent TOTP secret for unattended login"
+                )
 
             _, verified_payload = await self._raw_request(
                 "POST",
@@ -243,6 +319,8 @@ class PescApiClient:
                     "PESC returned invalid authentication tokens"
                 )
             self._tokens = self._validate_tokens(verified_payload)
+            if self._tokens.get("verified"):
+                self._verification_token = self._tokens["verified"]
 
     @staticmethod
     def _validate_tokens(payload: Mapping[str, Any]) -> dict[str, str]:
@@ -321,7 +399,12 @@ class PescApiClient:
         """Validate credentials and basic account access for config flow setup."""
 
         await self.async_authenticate()
-        accounts = await self._request("GET", "v8/accounts/light")
+        account_path = (
+            "v8/accounts"
+            if self._account_type == ACCOUNT_TYPE_LEGAL
+            else "v8/accounts/light"
+        )
+        accounts = await self._request("GET", account_path)
         if not isinstance(accounts, list):
             raise PescApiError("PESC returned an invalid account list")
 
@@ -372,6 +455,92 @@ class PescApiClient:
                 else None
             ),
             meters=self._meters(meters_data),
+            account_type=ACCOUNT_TYPE_INDIVIDUAL,
+        )
+
+    async def _async_legal_account_snapshot(
+        self, raw_account: Mapping[str, Any]
+    ) -> PescAccount:
+        """Fetch a legal contract, its energy objects, and current meters."""
+
+        account_id = int(raw_account["id"])
+        period_data, energy_objects = await asyncio.gather(
+            self._request("GET", f"v6/accounts/{account_id}/reading/period"),
+            self._request(
+                "GET", f"v6/users/current/accounts/{account_id}/energy-objects"
+            ),
+        )
+        if not isinstance(energy_objects, list):
+            raise PescApiError("PESC returned an invalid legal energy-object list")
+
+        usable_objects = [
+            item
+            for item in energy_objects
+            if isinstance(item, dict) and item.get("id") is not None
+        ]
+        meter_payloads = await asyncio.gather(
+            *(
+                self._request(
+                    "GET",
+                    (
+                        f"v6/accounts/{account_id}/energy-objects/"
+                        f"{int(item['id'])}/indications/actual"
+                    ),
+                )
+                for item in usable_objects
+            )
+        )
+        meters = tuple(
+            meter
+            for payload in meter_payloads
+            for meter in self._meters(payload, legal=True)
+        )
+
+        # PENDING means that the current legal-account period is still waiting
+        # for readings.  Once every scale has a current reading, keep the same
+        # REGISTERED state used by individual accounts so automations can share
+        # one duplicate guard across both cabinet types.
+        active_scales = [scale for meter in meters for scale in meter.scales]
+        if active_scales and all(
+            scale.current_reading is not None for scale in active_scales
+        ):
+            reading_state = "REGISTERED"
+        elif any(not bool(item.get("forbidden")) for item in usable_objects):
+            reading_state = "AVAILABLE"
+        else:
+            reading_state = "UNAVAILABLE"
+
+        addresses = [
+            str(item["eoAddress"])
+            for item in usable_objects
+            if item.get("eoAddress")
+        ]
+        account_number = self._account_number(raw_account)
+        alias = (
+            addresses[0]
+            if len(addresses) == 1
+            else str(raw_account.get("alias") or account_number or account_id)
+        )
+        return PescAccount(
+            account_id=account_id,
+            alias=alias,
+            account_number=account_number,
+            provider_code="PSK",
+            auto_payment_on=bool(raw_account.get("autoPaymentOn")),
+            delivery=(
+                str(raw_account["delivery"])
+                if raw_account.get("delivery") is not None
+                else None
+            ),
+            reading_state=reading_state,
+            reading_period=self._reading_period(period_data),
+            balance=None,
+            amount_due=None,
+            overpayment=None,
+            current_bill_amount=None,
+            current_bill_timestamp=None,
+            meters=meters,
+            account_type=ACCOUNT_TYPE_LEGAL,
         )
 
     @staticmethod
@@ -410,7 +579,7 @@ class PescApiClient:
         )
 
     @staticmethod
-    def _meters(payload: Any) -> tuple[PescMeter, ...]:
+    def _meters(payload: Any, *, legal: bool = False) -> tuple[PescMeter, ...]:
         if not isinstance(payload, list):
             return ()
         meters: list[PescMeter] = []
@@ -431,7 +600,13 @@ class PescApiClient:
                     PescMeterScale(
                         scale_id=int(raw_scale["meterScaleId"]),
                         name=str(
-                            raw_scale.get("scaleName") or raw_scale["meterScaleId"]
+                            (
+                                raw_scale.get("timeOfUse")
+                                if legal
+                                else raw_scale.get("scaleName")
+                            )
+                            or raw_scale.get("scaleName")
+                            or raw_scale["meterScaleId"]
                         ),
                         previous_reading=(
                             float(raw_scale["previousReading"])
@@ -442,8 +617,37 @@ class PescApiClient:
                             raw_scale.get("previousReadingDate")
                         ),
                         unit=(
-                            str(raw_scale["unit"])
+                            str(
+                                raw_scale.get("unit")
+                                or raw_scale.get("unitOfMeasure")
+                            )
                             if raw_scale.get("unit") is not None
+                            or raw_scale.get("unitOfMeasure") is not None
+                            else None
+                        ),
+                        register_id=(
+                            str(raw_scale["registerId"])
+                            if raw_scale.get("registerId") is not None
+                            else None
+                        ),
+                        indication_id=(
+                            int(raw_scale["indicationId"])
+                            if raw_scale.get("indicationId") is not None
+                            else None
+                        ),
+                        upstream_name=(
+                            str(raw_scale["scaleName"])
+                            if raw_scale.get("scaleName") is not None
+                            else None
+                        ),
+                        time_of_use=(
+                            str(raw_scale["timeOfUse"])
+                            if raw_scale.get("timeOfUse") is not None
+                            else None
+                        ),
+                        current_reading=(
+                            float(raw_scale["registerReading"])
+                            if raw_scale.get("registerReading") is not None
                             else None
                         ),
                     )
@@ -451,7 +655,9 @@ class PescApiClient:
             meters.append(
                 PescMeter(
                     registration=str(raw_id["registration"]),
-                    provider_id=int(raw_id.get("provider") or 0),
+                    provider_id=int(
+                        raw_id.get("provider") or raw_id.get("providerId") or 0
+                    ),
                     serial=str(raw_meter.get("serial") or raw_id["registration"]),
                     name=str(
                         raw_meter.get("name") or raw_meter.get("serial") or "Meter"
@@ -508,18 +714,33 @@ class PescApiClient:
     async def async_get_snapshot(self) -> PescSnapshot:
         """Discover configured provider accounts and fetch their current data."""
 
-        raw_accounts = await self._request("GET", "v8/accounts/light")
+        account_path = (
+            "v8/accounts"
+            if self._account_type == ACCOUNT_TYPE_LEGAL
+            else "v8/accounts/light"
+        )
+        raw_accounts = await self._request("GET", account_path)
         if not isinstance(raw_accounts, list):
             raise PescApiError("PESC returned an invalid account list")
 
-        selected_accounts = [
-            account
-            for account in raw_accounts
-            if isinstance(account, dict)
-            and self._provider_code(account) in self._provider_codes
-        ]
+        if self._account_type == ACCOUNT_TYPE_LEGAL:
+            # Legal contracts currently return ``providerCode: null`` even for
+            # PESC electricity.  The selected cabinet itself is the provider
+            # boundary, so filtering on that field would hide every contract.
+            selected_accounts = [
+                account for account in raw_accounts if isinstance(account, dict)
+            ]
+            snapshot_factory = self._async_legal_account_snapshot
+        else:
+            selected_accounts = [
+                account
+                for account in raw_accounts
+                if isinstance(account, dict)
+                and self._provider_code(account) in self._provider_codes
+            ]
+            snapshot_factory = self._async_account_snapshot
         accounts = await asyncio.gather(
-            *(self._async_account_snapshot(account) for account in selected_accounts)
+            *(snapshot_factory(account) for account in selected_accounts)
         )
         return PescSnapshot(
             accounts={account.account_id: account for account in accounts}
@@ -554,9 +775,13 @@ class PescApiClient:
         normalized = {
             str(key).strip().casefold(): value for key, value in readings.items()
         }
-        expected_keys = {str(scale.scale_id).casefold() for scale in meter.scales} | {
-            scale.name.strip().casefold() for scale in meter.scales
-        }
+        expected_keys = {str(scale.scale_id).casefold() for scale in meter.scales}
+        for scale in meter.scales:
+            expected_keys.add(scale.name.strip().casefold())
+            if scale.upstream_name:
+                expected_keys.add(scale.upstream_name.strip().casefold())
+            if scale.time_of_use:
+                expected_keys.add(scale.time_of_use.strip().casefold())
         unknown_keys = set(normalized) - expected_keys
         if unknown_keys:
             raise PescValidationError("One or more reading scale names are unknown")
@@ -570,6 +795,16 @@ class PescApiClient:
                 raw_value = normalized[name_key]
             elif id_key in normalized:
                 raw_value = normalized[id_key]
+            elif (
+                scale.upstream_name
+                and scale.upstream_name.strip().casefold() in normalized
+            ):
+                raw_value = normalized[scale.upstream_name.strip().casefold()]
+            elif (
+                scale.time_of_use
+                and scale.time_of_use.strip().casefold() in normalized
+            ):
+                raw_value = normalized[scale.time_of_use.strip().casefold()]
             else:
                 raise PescValidationError("A value is required for every meter scale")
 
@@ -605,6 +840,86 @@ class PescApiClient:
 
         return payload, result
 
+    @staticmethod
+    def _reading_path_value(value: float, digits_right: int | None) -> str:
+        """Format a validated reading for the legal validation URL."""
+
+        precision = digits_right or 0
+        rendered = f"{value:.{precision}f}"
+        if "." in rendered:
+            rendered = rendered.rstrip("0").rstrip(".")
+        return rendered
+
+    async def _async_submit_legal_readings(
+        self,
+        account: PescAccount,
+        meter: PescMeter,
+        normalized_readings: Mapping[str, float],
+    ) -> None:
+        """Validate every legal register and send the official web payload."""
+
+        scale_payloads: list[dict[str, Any]] = []
+        for scale in meter.scales:
+            if scale.register_id is None or scale.indication_id is None:
+                raise PescValidationError(
+                    "PESC omitted legal-account register metadata"
+                )
+            value = normalized_readings[scale.name]
+            value_path = self._reading_path_value(value, meter.digits_right)
+
+            # The official cabinet validates each register before the final
+            # contract write.  Repeating that call here preserves its abnormal-
+            # consumption protection instead of relying on local monotonicity.
+            await self._request(
+                "POST",
+                (
+                    f"v7/accounts/{account.account_id}/meters/"
+                    f"{quote(meter.registration, safe='')}/scales/"
+                    f"{quote(scale.register_id, safe='')}/reading/"
+                    f"{quote(value_path, safe='')}/validate"
+                ),
+                payload={},
+            )
+            scale_payloads.append(
+                {
+                    "meterScaleId": scale.scale_id,
+                    "registerId": scale.register_id,
+                    "indicationId": scale.indication_id,
+                    "scaleName": scale.upstream_name or scale.name,
+                    "timeOfUse": scale.time_of_use or scale.name,
+                    "registerReading": value,
+                    "previousReading": scale.previous_reading,
+                    "delta": (
+                        value - scale.previous_reading
+                        if scale.previous_reading is not None
+                        else 0
+                    ),
+                    "indicationDate": None,
+                }
+            )
+
+        response = await self._request(
+            "POST",
+            f"v7/accounts/{account.account_id}/indications",
+            payload={
+                "accountId": account.account_id,
+                "meterId": {
+                    "providerId": meter.provider_id,
+                    "registration": meter.registration,
+                },
+                "scales": scale_payloads,
+                "serial": meter.serial,
+                "uuid": str(uuid.uuid4()),
+            },
+        )
+        # Legal accounts normally return a localized success message.  Empty
+        # bodies/objects and ``true`` are also accepted by deployed API builds;
+        # HTTP status validation has already rejected unsuccessful responses.
+        if response is False or (
+            isinstance(response, dict) and response.get("success") is False
+        ):
+            raise PescApiError("PESC did not confirm that readings were accepted")
+
     async def async_submit_readings(
         self,
         account_id: int,
@@ -633,14 +948,21 @@ class PescApiClient:
             raise PescValidationError(f"The selected meter status is {meter.status}")
         payload, normalized_readings = self._scale_values(meter, readings)
 
-        response = await self._request(
-            "POST",
-            (
-                f"v8/accounts/{account.account_id}/meters/"
-                f"{quote(meter.registration, safe='')}/reading"
-            ),
-            payload=payload,
-        )
+        account_type = getattr(self, "_account_type", ACCOUNT_TYPE_INDIVIDUAL)
+        if account_type == ACCOUNT_TYPE_LEGAL:
+            await self._async_submit_legal_readings(
+                account, meter, normalized_readings
+            )
+            response: Any = True
+        else:
+            response = await self._request(
+                "POST",
+                (
+                    f"v8/accounts/{account.account_id}/meters/"
+                    f"{quote(meter.registration, safe='')}/reading"
+                ),
+                payload=payload,
+            )
         accepted = (
             response is None
             or response is True

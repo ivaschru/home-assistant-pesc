@@ -25,7 +25,7 @@ class PescReadingsAcceptedBinarySensor(PescCoordinatorEntity, BinarySensorEntity
         account_id: int,
     ) -> None:
         super().__init__(coordinator, account_id)
-        self._attr_unique_id = f"{account_id}_readings_accepted"
+        self._attr_unique_id = f"{self.pesc_unique_account_id}_readings_accepted"
 
     @property
     def is_on(self) -> bool:

@@ -87,7 +87,7 @@ class PescAccountSensor(PescCoordinatorEntity, SensorEntity):
     ) -> None:
         super().__init__(coordinator, account_id)
         self.entity_description = description
-        self._attr_unique_id = f"{account_id}_{description.key}"
+        self._attr_unique_id = f"{self.pesc_unique_account_id}_{description.key}"
 
     @property
     def native_value(self) -> Any:
@@ -141,7 +141,8 @@ class PescMeterScaleSensor(PescMeterCoordinatorEntity, SensorEntity):
         super().__init__(coordinator, account_id, meter_registration)
         self.scale_id = scale_id
         self._attr_unique_id = (
-            f"{account_id}_{meter_registration}_scale_{scale_id}_last_reading"
+            f"{self.pesc_unique_account_id}_{meter_registration}_"
+            f"scale_{scale_id}_last_reading"
         )
 
     @property

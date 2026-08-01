@@ -5,7 +5,12 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, PESC_WEB_BASE_URL
+from .const import (
+    ACCOUNT_TYPE_LEGAL,
+    DOMAIN,
+    PESC_INDIVIDUAL_WEB_BASE_URL,
+    PESC_LEGAL_WEB_BASE_URL,
+)
 from .coordinator import PescDataUpdateCoordinator
 from .models import PescAccount, PescMeter
 
@@ -22,6 +27,12 @@ class PescCoordinatorEntity(CoordinatorEntity[PescDataUpdateCoordinator]):
     ) -> None:
         super().__init__(coordinator)
         self.account_id = account_id
+        account = coordinator.data.accounts[account_id]
+        self.pesc_unique_account_id = (
+            f"legal_{account_id}"
+            if account.account_type == ACCOUNT_TYPE_LEGAL
+            else str(account_id)
+        )
 
     @property
     def account(self) -> PescAccount:
@@ -33,13 +44,23 @@ class PescCoordinatorEntity(CoordinatorEntity[PescDataUpdateCoordinator]):
     def device_info(self) -> DeviceInfo:
         """Represent each personal account/object as a Home Assistant device."""
 
+        is_legal = self.account.account_type == ACCOUNT_TYPE_LEGAL
+        identifier = (
+            f"legal_account_{self.account_id}"
+            if is_legal
+            else f"account_{self.account_id}"
+        )
         return DeviceInfo(
-            identifiers={(DOMAIN, f"account_{self.account_id}")},
+            identifiers={(DOMAIN, identifier)},
             name=f"PESC {self.account.alias}",
             manufacturer="PESC",
-            model="Personal account",
+            model="Legal account" if is_legal else "Individual account",
             configuration_url=(
-                f"{PESC_WEB_BASE_URL}/payments/individual/accounts?id={self.account_id}"
+                f"{PESC_LEGAL_WEB_BASE_URL}/payments/legal"
+                f"?account={self.account_id}"
+                if is_legal
+                else f"{PESC_INDIVIDUAL_WEB_BASE_URL}/payments/individual/"
+                f"accounts?id={self.account_id}"
             ),
         )
 
@@ -70,19 +91,34 @@ class PescMeterCoordinatorEntity(PescCoordinatorEntity):
     def device_info(self) -> DeviceInfo:
         """Expose each physical meter as a child of its account device."""
 
+        is_legal = self.account.account_type == ACCOUNT_TYPE_LEGAL
+        account_identifier = (
+            f"legal_account_{self.account_id}"
+            if is_legal
+            else f"account_{self.account_id}"
+        )
+        meter_identifier = (
+            f"legal_meter_{self.account_id}_{self.meter_registration}"
+            if is_legal
+            else f"meter_{self.account_id}_{self.meter_registration}"
+        )
         return DeviceInfo(
             identifiers={
                 (
                     DOMAIN,
-                    f"meter_{self.account_id}_{self.meter_registration}",
+                    meter_identifier,
                 )
             },
             name=f"PESC {self.account.alias} meter {self.meter.serial}",
             manufacturer="PESC",
             model=self.meter.name,
             serial_number=self.meter.serial,
-            via_device=(DOMAIN, f"account_{self.account_id}"),
+            via_device=(DOMAIN, account_identifier),
             configuration_url=(
-                f"{PESC_WEB_BASE_URL}/indications/individual/accounts?id={self.account_id}"
+                f"{PESC_LEGAL_WEB_BASE_URL}/indications/legal"
+                f"?account={self.account_id}"
+                if is_legal
+                else f"{PESC_INDIVIDUAL_WEB_BASE_URL}/indications/individual/"
+                f"accounts?id={self.account_id}"
             ),
         )

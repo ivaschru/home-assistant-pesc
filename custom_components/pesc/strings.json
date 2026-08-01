@@ -4,8 +4,9 @@
     "step": {
       "user": {
         "title": "Connect PESC personal account",
-        "description": "Enter the credentials used at ikus.pesc.ru. For unattended login, paste the Base32 TOTP secret or the full otpauth:// URI.",
+        "description": "Choose the cabinet first: individual accounts use ikus.pesc.ru, legal accounts use lk.pesc.ru. For unattended login, paste the permanent Base32 TOTP secret or the full otpauth:// URI.",
         "data": {
+          "account_type": "Cabinet type",
           "username": "Login",
           "password": "Password",
           "totp_secret": "TOTP secret or otpauth URI"
@@ -15,6 +16,7 @@
         "title": "Reconnect PESC personal account",
         "description": "Update all three credentials. The TOTP value must be the permanent secret or otpauth:// URI, not a six-digit code.",
         "data": {
+          "account_type": "Cabinet type",
           "username": "Login",
           "password": "Password",
           "totp_secret": "TOTP secret or otpauth URI"
@@ -30,6 +32,14 @@
     "abort": {
       "already_configured": "This PESC login is already configured",
       "reauth_successful": "PESC credentials were updated"
+    }
+  },
+  "selector": {
+    "account_type": {
+      "options": {
+        "individual": "Individual account — ikus.pesc.ru",
+        "legal": "Legal account — lk.pesc.ru"
+      }
     }
   },
   "entity": {

@@ -33,10 +33,12 @@ from .api import (
     PescValidationError,
 )
 from .const import (
+    ACCOUNT_TYPE_INDIVIDUAL,
     ATTR_ACCOUNT_ID,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_METER,
     ATTR_READINGS,
+    CONF_ACCOUNT_TYPE,
     CONF_PROVIDER_CODES,
     CONF_TOTP_SECRET,
     DEFAULT_PROVIDER_CODES,
@@ -139,6 +141,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: PescConfigEntry) -> bool
         entry.data[CONF_USERNAME],
         entry.data[CONF_PASSWORD],
         entry.data[CONF_TOTP_SECRET],
+        account_type=entry.data.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL),
         provider_codes=entry.data.get(CONF_PROVIDER_CODES, DEFAULT_PROVIDER_CODES),
     )
     coordinator = PescDataUpdateCoordinator(hass, client)

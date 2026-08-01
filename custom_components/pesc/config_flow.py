@@ -10,6 +10,9 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -22,7 +25,16 @@ from .api import (
     PescConnectionError,
     normalize_login,
 )
-from .const import CONF_PROVIDER_CODES, CONF_TOTP_SECRET, DEFAULT_PROVIDER_CODES, DOMAIN
+from .const import (
+    ACCOUNT_TYPE_INDIVIDUAL,
+    ACCOUNT_TYPE_LEGAL,
+    ACCOUNT_TYPES,
+    CONF_ACCOUNT_TYPE,
+    CONF_PROVIDER_CODES,
+    CONF_TOTP_SECRET,
+    DEFAULT_PROVIDER_CODES,
+    DOMAIN,
+)
 from .totp import InvalidTotpSecret, generate_totp
 
 
@@ -37,6 +49,16 @@ def _user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     )
     return vol.Schema(
         {
+            vol.Required(
+                CONF_ACCOUNT_TYPE,
+                default=values.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=list(ACCOUNT_TYPES),
+                    translation_key="account_type",
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            ),
             vol.Required(
                 CONF_USERNAME, default=values.get(CONF_USERNAME, "")
             ): TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT)),
@@ -59,12 +81,16 @@ class PescConfigFlow(ConfigFlow, domain=DOMAIN):
         # Parse and generate once before the network call to produce a useful
         # form error for malformed otpauth URIs without sending credentials.
         generate_totp(user_input[CONF_TOTP_SECRET])
-        normalized_login, _ = normalize_login(user_input[CONF_USERNAME])
+        account_type = user_input[CONF_ACCOUNT_TYPE]
+        normalized_login, _ = normalize_login(
+            user_input[CONF_USERNAME], account_type
+        )
         client = PescApiClient(
             async_get_clientsession(self.hass),
             normalized_login,
             user_input[CONF_PASSWORD],
             user_input[CONF_TOTP_SECRET],
+            account_type=account_type,
         )
         await client.async_validate_credentials()
         return normalized_login
@@ -87,12 +113,26 @@ class PescConfigFlow(ConfigFlow, domain=DOMAIN):
             except PescApiError:
                 errors["base"] = "unknown"
             else:
-                unique_id = hashlib.sha256(normalized_login.encode()).hexdigest()
+                account_type = user_input[CONF_ACCOUNT_TYPE]
+                # Preserve the historic individual unique ID so installed
+                # entries do not need reconfiguration.  Legal entries include
+                # their cabinet type and can coexist with the same email.
+                unique_source = (
+                    normalized_login
+                    if account_type == ACCOUNT_TYPE_INDIVIDUAL
+                    else f"{ACCOUNT_TYPE_LEGAL}:{normalized_login}"
+                )
+                unique_id = hashlib.sha256(unique_source.encode()).hexdigest()
                 await self.async_set_unique_id(unique_id)
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title="PESC",
+                    title=(
+                        "PESC — individual"
+                        if account_type == ACCOUNT_TYPE_INDIVIDUAL
+                        else "PESC — legal"
+                    ),
                     data={
+                        CONF_ACCOUNT_TYPE: account_type,
                         CONF_USERNAME: normalized_login,
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_TOTP_SECRET: user_input[CONF_TOTP_SECRET],
@@ -109,7 +149,12 @@ class PescConfigFlow(ConfigFlow, domain=DOMAIN):
 
         entry = self._get_reauth_entry()
         return await self.async_step_reauth_confirm(
-            {CONF_USERNAME: entry.data.get(CONF_USERNAME, "")}
+            {
+                CONF_ACCOUNT_TYPE: entry.data.get(
+                    CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL
+                ),
+                CONF_USERNAME: entry.data.get(CONF_USERNAME, ""),
+            }
         )
 
     async def async_step_reauth_confirm(
@@ -119,7 +164,12 @@ class PescConfigFlow(ConfigFlow, domain=DOMAIN):
 
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
-        defaults = {CONF_USERNAME: entry.data.get(CONF_USERNAME, "")}
+        defaults = {
+            CONF_ACCOUNT_TYPE: entry.data.get(
+                CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL
+            ),
+            CONF_USERNAME: entry.data.get(CONF_USERNAME, ""),
+        }
         if user_input is not None and CONF_PASSWORD in user_input:
             try:
                 normalized_login = await self._async_validate(user_input)
@@ -135,6 +185,7 @@ class PescConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_update_reload_and_abort(
                     entry,
                     data_updates={
+                        CONF_ACCOUNT_TYPE: user_input[CONF_ACCOUNT_TYPE],
                         CONF_USERNAME: normalized_login,
                         CONF_PASSWORD: user_input[CONF_PASSWORD],
                         CONF_TOTP_SECRET: user_input[CONF_TOTP_SECRET],

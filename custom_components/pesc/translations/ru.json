@@ -3,18 +3,19 @@
     "step": {
       "user": {
         "title": "Подключение личного кабинета ПСК",
-        "description": "Введите данные для ikus.pesc.ru. Для автоматического входа вставьте постоянный Base32-секрет TOTP или полный URI otpauth://.",
-        "data": {"username": "Логин", "password": "Пароль", "totp_secret": "Секрет TOTP или URI otpauth"}
+        "description": "Сначала выберите кабинет: ФЛ работает через ikus.pesc.ru, ЮЛ — через lk.pesc.ru. Для автоматического входа вставьте постоянный Base32-секрет TOTP или полный URI otpauth://.",
+        "data": {"account_type": "Тип кабинета", "username": "Логин", "password": "Пароль", "totp_secret": "Секрет TOTP или URI otpauth"}
       },
       "reauth_confirm": {
         "title": "Повторный вход в личный кабинет ПСК",
         "description": "Обновите все три реквизита. Нужен постоянный секрет TOTP, а не одноразовый шестизначный код.",
-        "data": {"username": "Логин", "password": "Пароль", "totp_secret": "Секрет TOTP или URI otpauth"}
+        "data": {"account_type": "Тип кабинета", "username": "Логин", "password": "Пароль", "totp_secret": "Секрет TOTP или URI otpauth"}
       }
     },
     "error": {"cannot_connect": "Не удалось подключиться к ПСК", "invalid_auth": "ПСК отклонила логин, пароль или код TOTP", "invalid_totp": "Некорректный секрет TOTP или URI otpauth", "unknown": "Неожиданный ответ ПСК"},
     "abort": {"already_configured": "Этот логин ПСК уже настроен", "reauth_successful": "Данные входа ПСК обновлены"}
   },
+  "selector": {"account_type": {"options": {"individual": "Физическое лицо — ikus.pesc.ru", "legal": "Юридическое лицо — lk.pesc.ru"}}},
   "entity": {
     "sensor": {"balance": {"name": "Баланс"}, "amount_due": {"name": "К оплате"}, "overpayment": {"name": "Переплата"}, "current_bill": {"name": "Текущий счёт"}, "reading_deadline": {"name": "Срок передачи показаний"}},
     "binary_sensor": {"readings_accepted": {"name": "Приём показаний открыт"}}

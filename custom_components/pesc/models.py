@@ -21,6 +21,14 @@ class PescMeterScale:
     previous_reading: float | None
     previous_reading_date: date | None
     unit: str | None
+    # Legal-account submissions refer to the register and indication separately
+    # from the user-facing tariff name.  Individual accounts leave these fields
+    # empty and continue to submit only ``scale_id`` as before.
+    register_id: str | None = None
+    indication_id: int | None = None
+    upstream_name: str | None = None
+    time_of_use: str | None = None
+    current_reading: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +75,7 @@ class PescAccount:
     current_bill_amount: float | None
     current_bill_timestamp: datetime | None
     meters: tuple[PescMeter, ...] = field(default_factory=tuple)
+    account_type: str = "individual"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,14 +1,17 @@
 """Tests for PESC parsing and pre-submission safety checks."""
 
 from datetime import date
+from uuid import UUID
 
 import pytest
 
 from custom_components.pesc.api import (
     PescApiClient,
     PescValidationError,
+    _parse_date,
     normalize_login,
 )
+from custom_components.pesc.const import ACCOUNT_TYPE_LEGAL
 from custom_components.pesc.models import (
     PescAccount,
     PescMeter,
@@ -64,10 +67,37 @@ class RecordingClient(PescApiClient):
         return {}
 
 
+class LegalRecordingClient(RecordingClient):
+    """Record the legal-account validation calls and final contract write."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._account_type = ACCOUNT_TYPE_LEGAL
+
+    async def _request(self, method: str, path: str, *, payload=None):
+        self.requests.append((method, path, payload))
+        return "Показания успешно переданы" if path.endswith("/indications") else {}
+
+
 def test_phone_normalization() -> None:
     """Match PESC's required international Russian phone format."""
 
     assert normalize_login("8 (999) 123-45-67") == ("+79991234567", "PHONE")
+
+
+def test_legal_login_is_not_rewritten_as_phone() -> None:
+    """Keep organization usernames intact for the legal cabinet."""
+
+    assert normalize_login("contract-user", ACCOUNT_TYPE_LEGAL) == (
+        "contract-user",
+        "LOGIN",
+    )
+
+
+def test_legal_russian_reading_month_is_parsed() -> None:
+    """Treat the legal cabinet's Russian month as a stable month marker."""
+
+    assert _parse_date("июнь 2026") == date(2026, 6, 1)
 
 
 def test_all_scales_are_required() -> None:
@@ -112,3 +142,105 @@ async def test_submission_uses_discovered_scale_ids() -> None:
             [{"scaleId": 10, "value": 101}, {"scaleId": 20, "value": 51}],
         )
     ]
+
+
+async def test_legal_submission_validates_registers_and_sends_one_payload() -> None:
+    """Mirror the legal frontend's per-scale validation and final v7 write."""
+
+    meter = PescMeter(
+        registration="2457293",
+        provider_id=1,
+        serial="synthetic-legal-meter",
+        name="Parking meter",
+        status="ACTIVE",
+        digits_left=6,
+        digits_right=2,
+        scales=(
+            PescMeterScale(
+                1,
+                "День",
+                5315.78,
+                date(2026, 6, 1),
+                "A+",
+                register_id="register-day",
+                indication_id=101,
+                upstream_name="DAY",
+                time_of_use="День",
+            ),
+            PescMeterScale(
+                2,
+                "Ночь",
+                12206.63,
+                date(2026, 6, 1),
+                "A+",
+                register_id="register-night",
+                indication_id=102,
+                upstream_name="NIGHT",
+                time_of_use="Ночь",
+            ),
+        ),
+    )
+    account = PescAccount(
+        account_id=1001,
+        alias="Synthetic legal object",
+        account_number="contract-1",
+        provider_code="PSK",
+        auto_payment_on=False,
+        delivery=None,
+        reading_state="AVAILABLE",
+        reading_period=PescReadingPeriod(
+            "July", date(2026, 7, 17), date(2026, 8, 17), None, False, None
+        ),
+        balance=None,
+        amount_due=None,
+        overpayment=None,
+        current_bill_amount=None,
+        current_bill_timestamp=None,
+        meters=(meter,),
+        account_type=ACCOUNT_TYPE_LEGAL,
+    )
+    client = LegalRecordingClient()
+    result = await client.async_submit_readings(
+        account.account_id,
+        meter.serial,
+        {"День": 5316.25, "NIGHT": 12207.5},
+        snapshot=PescSnapshot(accounts={account.account_id: account}),
+    )
+
+    assert result.accepted is True
+    assert [request[1] for request in client.requests[:2]] == [
+        "v7/accounts/1001/meters/2457293/scales/register-day/reading/5316.25/validate",
+        "v7/accounts/1001/meters/2457293/scales/register-night/reading/12207.5/validate",
+    ]
+    method, path, payload = client.requests[2]
+    assert (method, path) == ("POST", "v7/accounts/1001/indications")
+    UUID(payload.pop("uuid"))
+    assert payload == {
+        "accountId": 1001,
+        "meterId": {"providerId": 1, "registration": "2457293"},
+        "serial": "synthetic-legal-meter",
+        "scales": [
+            {
+                "meterScaleId": 1,
+                "registerId": "register-day",
+                "indicationId": 101,
+                "scaleName": "DAY",
+                "timeOfUse": "День",
+                "registerReading": 5316.25,
+                "previousReading": 5315.78,
+                "delta": pytest.approx(0.47),
+                "indicationDate": None,
+            },
+            {
+                "meterScaleId": 2,
+                "registerId": "register-night",
+                "indicationId": 102,
+                "scaleName": "NIGHT",
+                "timeOfUse": "Ночь",
+                "registerReading": 12207.5,
+                "previousReading": 12206.63,
+                "delta": pytest.approx(0.87),
+                "indicationDate": None,
+            },
+        ],
+    }

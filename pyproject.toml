@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "home-assistant-pesc"
-version = "0.1.0"
-description = "Unofficial PESC personal-account integration for Home Assistant"
+version = "0.2.0"
+description = "Unofficial PESC individual and legal account integration for Home Assistant"
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}

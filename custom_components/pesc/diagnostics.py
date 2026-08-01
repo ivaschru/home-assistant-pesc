@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from . import PescConfigEntry
-from .const import CONF_TOTP_SECRET
+from .const import ACCOUNT_TYPE_INDIVIDUAL, CONF_ACCOUNT_TYPE, CONF_TOTP_SECRET
 
 
 async def async_get_config_entry_diagnostics(
@@ -20,6 +20,9 @@ async def async_get_config_entry_diagnostics(
         "entry": {
             "version": entry.version,
             "state": entry.state.value,
+            "account_type": entry.data.get(
+                CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL
+            ),
             "configured_provider_count": len(entry.data.get("provider_codes", [])),
             "has_password": bool(entry.data.get("password")),
             "has_totp_secret": bool(entry.data.get(CONF_TOTP_SECRET)),
