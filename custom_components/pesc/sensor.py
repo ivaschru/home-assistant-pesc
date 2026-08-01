@@ -161,15 +161,26 @@ class PescMeterScaleSensor(PescMeterCoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        """Return the last reading accepted by PESC."""
+        """Return the newest reading currently known to PESC.
 
+        The legal cabinet keeps the preceding settled reading in
+        ``previousReading`` and exposes a newly submitted value separately as
+        ``registerReading`` until the next period rolls over.  Prefer that
+        current value when present so a successful submission is visible in HA
+        immediately; individual accounts continue to use the historic field.
+        """
+
+        if self.scale.current_reading is not None:
+            return self.scale.current_reading
         return self.scale.previous_reading
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         return {
             "scale_id": self.scale.scale_id,
+            "previous_reading": self.scale.previous_reading,
             "previous_reading_date": self.scale.previous_reading_date,
+            "current_period_reading": self.scale.current_reading,
             "meter_status": self.meter.status,
             "meter_registration": self.meter.registration,
         }
