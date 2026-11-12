@@ -4,6 +4,18 @@ submit_readings:
     Validates a complete set of readings against the current meter metadata and
     submits it to PESC. This action changes data in the personal account.
   fields:
+    confirm_high_consumption:
+      name: Confirm unusually high consumption
+      description: Explicitly confirm only legal-register warning LKK_SERVICE_054 (HTTP 416). Defaults to false. Requires expected_period; all other checks remain active.
+      default: false
+      selector:
+        boolean:
+    expected_period:
+      name: Expected legal reading period
+      description: Exact period name, date_from and date_to joined by |, from the original notification. Required for high-consumption confirmation.
+      example: "September 2026|2026-09-17|2026-10-17"
+      selector:
+        text:
     config_entry_id:
       name: Config entry
       description: Required only when more than one PESC config entry is loaded.
@@ -34,3 +46,12 @@ submit_readings:
         Night: 6789
       selector:
         object:
+    return_errors:
+      name: Return error details
+      description: >-
+        Return accepted=false with the exact PESC error message, code and kind
+        instead of raising on a known failure. Use response_variable and check
+        accepted in the automation. This does not bypass validation or retry.
+      default: false
+      selector:
+        boolean:

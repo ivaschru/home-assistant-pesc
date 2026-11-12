@@ -8,7 +8,7 @@ config-entry storage and are never copied into entity attributes or logs.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import voluptuous as vol
@@ -36,17 +36,23 @@ from .const import (
     ACCOUNT_TYPE_INDIVIDUAL,
     ATTR_ACCOUNT_ID,
     ATTR_CONFIG_ENTRY_ID,
+    ATTR_CONFIRM_HIGH_CONSUMPTION,
+    ATTR_EXPECTED_PERIOD,
     ATTR_METER,
     ATTR_READINGS,
+    ATTR_RETURN_ERRORS,
     CONF_ACCOUNT_TYPE,
     CONF_PROVIDER_CODES,
     CONF_TOTP_SECRET,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_PROVIDER_CODES,
     DOMAIN,
     SERVICE_SUBMIT_READINGS,
     TOKEN_REFRESH_INTERVAL,
 )
 from .coordinator import PescDataUpdateCoordinator
+from .migration import PescEntryMigrationError, migrated_entry_data
+from .submission import async_submit_readings_response
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -62,6 +68,9 @@ SUBMIT_READINGS_SCHEMA = vol.Schema(
         vol.Required(ATTR_ACCOUNT_ID): vol.Coerce(int),
         vol.Optional(ATTR_METER): cv.string,
         vol.Required(ATTR_READINGS): {cv.string: vol.Coerce(float)},
+        vol.Optional(ATTR_RETURN_ERRORS, default=False): cv.boolean,
+        vol.Optional(ATTR_CONFIRM_HIGH_CONSUMPTION, default=False): cv.boolean,
+        vol.Optional(ATTR_EXPECTED_PERIOD): cv.string,
     }
 )
 
@@ -107,21 +116,31 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
         entry: PescConfigEntry = entries[0]
         try:
-            result = await entry.runtime_data.client.async_submit_readings(
+            result = await async_submit_readings_response(
+                entry.runtime_data.client,
                 call.data[ATTR_ACCOUNT_ID],
                 call.data.get(ATTR_METER),
                 call.data[ATTR_READINGS],
                 snapshot=entry.runtime_data.coordinator.data,
+                return_errors=call.data[ATTR_RETURN_ERRORS],
+                confirm_high_consumption=call.data[ATTR_CONFIRM_HIGH_CONSUMPTION],
+                expected_period=call.data.get(ATTR_EXPECTED_PERIOD),
             )
         except PescValidationError as exc:
             raise ServiceValidationError(str(exc)) from exc
         except (PescApiError, PescConnectionError, PescAuthenticationError) as exc:
             raise HomeAssistantError(str(exc)) from exc
 
+        # A handled rejection is a failure response, not a successful write.
+        # Returning it directly preserves the exact provider reason even if a
+        # separate coordinator refresh would also encounter a network error.
+        if not result["accepted"]:
+            return result
+
         # Refresh immediately so the meter sensors confirm exactly what PESC
         # accepted instead of waiting for the next hourly coordinator cycle.
         await entry.runtime_data.coordinator.async_request_refresh()
-        return asdict(result)
+        return result
 
     hass.services.async_register(
         DOMAIN,
@@ -129,6 +148,25 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         async_submit_readings,
         schema=SUBMIT_READINGS_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: PescConfigEntry) -> bool:
+    """Upgrade compatible entries in HA while preserving their identity.
+
+    Do not create a second entry or touch entity registry/history. HA persists
+    this update before normal setup creates a fresh, read-only PESC session.
+    Log only the schema version: entry data contains passwords and TOTP seeds.
+    """
+
+    try:
+        data = migrated_entry_data(entry.data, entry.version)
+    except PescEntryMigrationError:
+        _LOGGER.error("Cannot migrate PESC config entry version %s", entry.version)
+        return False
+    hass.config_entries.async_update_entry(
+        entry, data=data, version=CONFIG_ENTRY_VERSION
     )
     return True
 

@@ -46,6 +46,29 @@ from .totp import generate_totp
 class PescApiError(Exception):
     """Base error raised for a failed PESC request."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        """Keep the safe provider reason separately from transport credentials.
+
+        Automation callers need the provider's exact rejection reason.  Retain
+        only its message, code and status, never the complete response, request
+        headers or authentication payload.  Existing exception-based callers
+        still see the same message through ``str(error)``.
+        """
+
+        super().__init__(message)
+        self.code = code
+        self.http_status = http_status
+
+
+class PescHighConsumptionWarning(PescApiError):
+    """The exact legal register advisory requiring explicit confirmation."""
+
 
 class PescAuthenticationError(PescApiError):
     """Raised when PESC credentials or the TOTP challenge are rejected."""
@@ -259,9 +282,14 @@ class PescApiClient:
 
         if status not in allowed:
             error = self._error_message(data, status)
+            code = data.get("code") if isinstance(data, dict) else None
+            metadata = {
+                "code": str(code) if code not in (None, "") else None,
+                "http_status": status,
+            }
             if status in {401, 403, 424}:
-                raise PescAuthenticationError(error)
-            raise PescApiError(error)
+                raise PescAuthenticationError(error, **metadata)
+            raise PescApiError(error, **metadata)
         return status, data
 
     async def async_authenticate(self) -> None:
@@ -511,9 +539,7 @@ class PescApiClient:
             reading_state = "UNAVAILABLE"
 
         addresses = [
-            str(item["eoAddress"])
-            for item in usable_objects
-            if item.get("eoAddress")
+            str(item["eoAddress"]) for item in usable_objects if item.get("eoAddress")
         ]
         account_number = self._account_number(raw_account)
         alias = (
@@ -617,10 +643,7 @@ class PescApiClient:
                             raw_scale.get("previousReadingDate")
                         ),
                         unit=(
-                            str(
-                                raw_scale.get("unit")
-                                or raw_scale.get("unitOfMeasure")
-                            )
+                            str(raw_scale.get("unit") or raw_scale.get("unitOfMeasure"))
                             if raw_scale.get("unit") is not None
                             or raw_scale.get("unitOfMeasure") is not None
                             else None
@@ -801,8 +824,7 @@ class PescApiClient:
             ):
                 raw_value = normalized[scale.upstream_name.strip().casefold()]
             elif (
-                scale.time_of_use
-                and scale.time_of_use.strip().casefold() in normalized
+                scale.time_of_use and scale.time_of_use.strip().casefold() in normalized
             ):
                 raw_value = normalized[scale.time_of_use.strip().casefold()]
             else:
@@ -855,6 +877,8 @@ class PescApiClient:
         account: PescAccount,
         meter: PescMeter,
         normalized_readings: Mapping[str, float],
+        *,
+        confirm_high_consumption: bool = False,
     ) -> None:
         """Validate every legal register and send the official web payload."""
 
@@ -870,16 +894,28 @@ class PescApiClient:
             # The official cabinet validates each register before the final
             # contract write.  Repeating that call here preserves its abnormal-
             # consumption protection instead of relying on local monotonicity.
-            await self._request(
-                "POST",
-                (
-                    f"v7/accounts/{account.account_id}/meters/"
-                    f"{quote(meter.registration, safe='')}/scales/"
-                    f"{quote(scale.register_id, safe='')}/reading/"
-                    f"{quote(value_path, safe='')}/validate"
-                ),
-                payload={},
-            )
+            try:
+                await self._request(
+                    "POST",
+                    (
+                        f"v7/accounts/{account.account_id}/meters/"
+                        f"{quote(meter.registration, safe='')}/scales/"
+                        f"{quote(scale.register_id, safe='')}/reading/"
+                        f"{quote(value_path, safe='')}/validate"
+                    ),
+                    payload={},
+                )
+            except PescApiError as error:
+                # Only this known advisory from per-register validation can
+                # be confirmed.  A final-write error with the same HTTP status,
+                # other warnings, authentication and transport errors still
+                # fail normally.  Every other register is validated as usual.
+                if error.http_status != 416 or error.code != "LKK_SERVICE_054":
+                    raise
+                if not confirm_high_consumption:
+                    raise PescHighConsumptionWarning(
+                        str(error), code=error.code, http_status=error.http_status
+                    ) from error
             scale_payloads.append(
                 {
                     "meterScaleId": scale.scale_id,
@@ -927,10 +963,19 @@ class PescApiClient:
         readings: Mapping[str, Any],
         *,
         snapshot: PescSnapshot | None = None,
+        confirm_high_consumption: bool = False,
+        expected_period: str | None = None,
     ) -> PescSubmissionResult:
         """Validate and submit a complete meter reading set to PESC."""
 
-        current = snapshot or await self.async_get_snapshot()
+        # A delayed confirmation must not use yesterday's cached AVAILABLE
+        # state.  Fetch immediately before the write and fence the exact period
+        # whose values were shown to the person in the original notification.
+        current = (
+            await self.async_get_snapshot()
+            if confirm_high_consumption
+            else snapshot or await self.async_get_snapshot()
+        )
         try:
             account = current.accounts[int(account_id)]
         except (KeyError, ValueError) as exc:
@@ -943,6 +988,29 @@ class PescApiClient:
                 f"PESC reading state is {account.reading_state}, not AVAILABLE"
             )
 
+        if confirm_high_consumption:
+            if getattr(self, "_account_type", None) != ACCOUNT_TYPE_LEGAL:
+                raise PescValidationError(
+                    "High-consumption confirmation requires a legal account"
+                )
+            period = account.reading_period
+            if (
+                not period
+                or not period.name
+                or not period.date_from
+                or not period.date_to
+            ):
+                raise PescValidationError(
+                    "PESC omitted the current legal reading period"
+                )
+            period_key = (
+                f"{period.name}|{period.date_from}|{period.date_to}" if period else None
+            )
+            if not expected_period or expected_period != period_key:
+                raise PescValidationError(
+                    "PESC reading period changed or was not specified"
+                )
+
         meter = self._find_meter(account, meter_reference)
         if meter.status not in {None, "ACTIVE"}:
             raise PescValidationError(f"The selected meter status is {meter.status}")
@@ -951,7 +1019,10 @@ class PescApiClient:
         account_type = getattr(self, "_account_type", ACCOUNT_TYPE_INDIVIDUAL)
         if account_type == ACCOUNT_TYPE_LEGAL:
             await self._async_submit_legal_readings(
-                account, meter, normalized_readings
+                account,
+                meter,
+                normalized_readings,
+                confirm_high_consumption=confirm_high_consumption,
             )
             response: Any = True
         else:

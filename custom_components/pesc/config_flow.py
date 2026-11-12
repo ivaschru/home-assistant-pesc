@@ -32,6 +32,7 @@ from .const import (
     CONF_ACCOUNT_TYPE,
     CONF_PROVIDER_CODES,
     CONF_TOTP_SECRET,
+    CONFIG_ENTRY_VERSION,
     DEFAULT_PROVIDER_CODES,
     DOMAIN,
 )
@@ -73,7 +74,7 @@ def _user_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 class PescConfigFlow(ConfigFlow, domain=DOMAIN):
     """Create or reauthenticate one PESC personal-account entry."""
 
-    VERSION = 1
+    VERSION = CONFIG_ENTRY_VERSION
 
     async def _async_validate(self, user_input: dict[str, Any]) -> str:
         """Validate TOTP syntax and prove the full login against PESC."""
