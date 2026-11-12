@@ -182,16 +182,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: PescConfigEntry) -> bool
         account_type=entry.data.get(CONF_ACCOUNT_TYPE, ACCOUNT_TYPE_INDIVIDUAL),
         provider_codes=entry.data.get(CONF_PROVIDER_CODES, DEFAULT_PROVIDER_CODES),
     )
-    coordinator = PescDataUpdateCoordinator(hass, client)
+    coordinator = PescDataUpdateCoordinator(hass, entry, client)
     await coordinator.async_config_entry_first_refresh()
 
     async def async_refresh_tokens(_now: Any) -> None:
         """Keep the short-lived PESC tokens warm between hourly polls."""
 
+        # During an outage, use the read recovery path so there is one retry
+        # schedule and a restored token also restores the visible entities.
+        if not coordinator.last_update_success:
+            await coordinator.async_request_refresh()
+            return
         try:
             await client.async_refresh_tokens()
         except PescAuthenticationError:
-            _LOGGER.warning("PESC token refresh requires reauthentication")
+            await coordinator.async_request_refresh()
         except PescConnectionError:
             _LOGGER.debug("PESC token refresh could not reach the server")
 
